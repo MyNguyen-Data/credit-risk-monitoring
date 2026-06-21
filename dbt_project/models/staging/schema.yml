@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: stg_scored_applications
+    columns:
+      - name: sk_id_curr
+        tests:
+          - unique
+      - name: score 
+        tests: 
+          - not_null
+  - name: stg_model_features
+    description: Long feature frame, one row per (sk_id_curr, feature_name). Staging is a passthrough 
+      (no GROUP BY / DISTINCT), so this grain is inherited from the raw load, not constructed
+      here — the composite uniqueness test pins it. A duplicate applicant-feature row would
+      inflate that feature's bin counts and bias its PSI, and this is the only layer it surfaces.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [sk_id_curr, feature_name]
+    columns:
+      - name: feature_value
+        description: WOE bin level for the feature. Missingness is encoded as 0
+          (is_missing_cohort = feature_value = 0); a NULL would make that flag NULL and turn into
+          a phantom bin downstream, so the value is required non-null. Not filtered upstream, so
+          the test is not tautological.
+        tests:
+          - not_null
+      - name: feature_name
+        description: Feature identifier; joins to stg_model_coefficients for the coefficient in the pillar 
+          subscore. The relationships test enforces that every monitored feature has a coefficient — 
+          a missing one yields a null coef and silently drops that term from sum(feature_value * coef). 
+          Tested one-directionally on purpose, an orphan coefficient (no matching feature) is harmless — 
+          it sits on the right of the left join in int_subscore_by_pillar and is simply excluded, 
+          never entering the sum — so the coef→feature direction needs no test.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_model_coefficients')
+                field: feature_name
+  - name: stg_model_coefficients
+    description: Scorecard coefficients, one row per model feature. 
+      Passthrough from the raw coefficient export; coefficient aliased to coef.
+    columns:
+      - name: feature_name
+        description: Join key to the model feature set. Unique by design — a duplicate fans out 
+          the subscore join in int_subscore_by_pillar and double-counts that term, silently inflating the 
+          pillar subscore and its Gini.
+        tests:
+          - unique
+          - not_null
+      - name: coef
+        description: Logistic-regression coefficient; multiplies the feature value in the pillar
+          subscore. not_null complements the relationships test on feature_name — that guarantees
+          the coefficient row exists, this guarantees its value is usable. A null coef silently
+          zeroes that term in sum(feature_value * coef), the same under-count a missing row causes
+          but invisible to a referential check.
+        tests:
+          - not_null
+

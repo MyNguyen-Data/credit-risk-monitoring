@@ -1,0 +1,150 @@
+version: 2
+
+models:
+  - name: mart_psi_score
+    description: Per-period PSI and alert tier. PSI is summed over score bins, rows grouped by period.
+      One row per period; grain is set by the macro's GROUP BY, so it's GROUP-BY-fixed and not tested.
+    columns:
+      - name: psi_value
+        description: PSI per period, non-negative by definition (every term (a-e)·ln(a/e) ≥ 0; the epsilon floor only keeps ln finite). 
+          The accepted_range floor (min 0, inclusive because baseline-vs-itself = 0) is a tripwire on the shared psi_from_counts macro, 
+          a sign flip or NaN leak shows up as a negative. It does not verify correctness; PSI can be positive and wrong. 
+          There's no not_null test here, unlike mart_gini_by_period. A gini can come out null when a period has 
+          only one class, because the macro divides by zero and nullif turns that into a null. 
+          PSI never hits that case — the epsilon floor stops the division by zero, so the value is always 
+          a real number.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: alert_tier
+        description: Drift tier from the macro's CASE (baseline at P0, stable <0.1, moderate <0.2, high ≥0.2). Accepted_values pins the four-value vocabulary 
+          the dashboards and README thresholds rely on; a typo or renamed branch would emit something unexpected. accepted_values skips NULLs, 
+          but the thresholds tile the full non-negative range so there is no ELSE fall-through.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['baseline', 'stable', 'moderate', 'high']
+  - name: mart_psi_features
+    description: Per-(feature_name, period) PSI with group label and alert tier. The psi CTE fixes grain via the macro's GROUP BY; 
+        a LEFT JOIN to distinct(feature_name, feature_group) then attaches the label. That DISTINCT is on the pair, 
+        so grain holds only while feature_name → feature_group is 1:1 — the composite 
+        uniqueness test enforces that (a feature in two groups would double its rows). This is the one fan-out point in the feature lineage.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [feature_name, period]
+    columns: 
+      - name: psi_value
+        description: PSI per feature per period, non-negative by definition (every term (a-e)·ln(a/e) ≥ 0; the epsilon floor only keeps ln finite). 
+          The accepted_range floor (min 0, inclusive because baseline-vs-itself = 0) is a tripwire on the shared psi_from_counts macro, 
+          a sign flip or NaN leak shows up as a negative. It does not verify correctness; PSI can be positive and wrong.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: alert_tier
+        description: Drift tier from the macro's CASE (baseline at P0, stable <0.1, moderate <0.2, high ≥0.2). Accepted_values pins the four-value vocabulary 
+          the dashboards and README thresholds rely on; a typo or renamed branch would emit something unexpected. accepted_values skips NULLs, 
+          but the thresholds tile the full non-negative range so there is no ELSE fall-through.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['baseline', 'stable', 'moderate', 'high']
+  - name: mart_gini_by_period
+    description: Gini per synthetic time period, from the rank-sum (Mann-Whitney) form of AUC,
+      2*AUC - 1. One row per period; grain is set by the macro's partition_by, so it's
+      GROUP-BY-fixed and not tested.
+    columns:
+      - name: gini
+        description: Gini for the period. accepted_range pins the structural bound [0, 1] —
+          outside it means the rank-sum macro mis-emitted, not that the model drifted. not_null
+          guards the macro's nullif(n_pos * n_neg, 0) path; a null means the period went
+          single-class, an anomaly for a real cohort that the range check would miss.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+  - name: mart_gini_pooled
+    description: Whole-population Gini, reproduces Phase 1 to eight sig figs, pinned by the singular test.
+  - name: mart_gini_by_pillar
+    description: Per-pillar Gini via the shared gini_rank_sum macro, ranks on subscore
+      (each pillar's partial linear predictor) and partitions by pillar, one row
+      per pillar. Grain is the macro's GROUP BY pillar, so mart uniqueness is
+      tautological and left untested, as with the other Gini marts. Every pillar's
+      Gini is computed over the full scored population — every applicant carries a
+      subscore in every pillar — so pillars are feature groupings, not population slices.
+    columns:
+      - name: gini
+        description: Pillar-level Gini. accepted_range [0, 1] is an empirical floor on static,
+          known-positive data, not the structural range ([-1, 1]); it acts as a
+          tripwire on the shared macro under the subscore/pillar parameterization.
+          not_null is deliberately omitted, pillars are full-population groupings,
+          not slices, so each pillar's label set is the whole population's and the
+          macro's nullif(n_pos*n_neg, 0) path is unreachable — a null Gini cannot
+          arise. Contrast mart_gini_by_period.gini, which carries not_null because
+          periods are slices and a single-class period is structurally possible.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value : 0
+                max_value : 1
+  - name: mart_gini_by_pillar_with_periods
+    description: Gini grid, one row per (period, pillar) cell, the finest-grained Gini view
+      in the lineage — by_pillar pools over periods, by_period pools over pillars,
+      and this crosses both. Built by the gini_rank_sum macro over
+      int_subscore_by_pillar_with_periods, partitioned on [period, pillar], giving
+      a midrank rank-sum Gini per cell. Grain is one row per (period, pillar) by
+      the macro's group-by on the partition keys, so no grain test is carried — it
+      would be construction-tautological, the same call as mart_gini_by_period and
+      mart_gini_by_pillar. The grain that actually matters sits upstream
+      int_subscore_by_pillar_with_periods preserves (sk_id_curr, pillar) through
+      its LEFT JOIN only because int_score_with_periods is unique on sk_id_curr,
+      which holds by construction back through int_period_assignment to the
+      test-guarded stg_scored_applications — documented on those models. Every
+      (period, pillar) cell is populated, since each applicant carries a subscore
+      in every pillar and exactly one period, so no completeness test either. The
+      not_null and accepted_range guards, with their reasoning, live on the gini
+      column.
+    columns:
+      - name: gini 
+        description: Gini for each (period, pillar) cell. not_null is a real coverage guard, not
+          a formality, because pillar is a full-population grouping rather than a
+          slice, a cell's label set equals its period's label set, so a cell is
+          single-class exactly when its period is — and periods are slices, so
+          single-class (hence a null Gini via the macro's nullif div-guard) is
+          structurally possible. This mirrors by_period's not_null, unlike by_pillar's
+          skip; green here because every period is biclass. accepted_range min is 0,
+          an empirical static-data floor (the structural range is [-1, 1]), the lowest
+          observed cell is (P5, region) at 0.088, clearing 0 by roughly 4-5x region's
+          inter-period spread, so a future breach signals real degradation rather than
+          sampling noise. max is 1, the structural ceiling and a macro tripwire — a
+          cell above it means the (period, pillar) parameterization broke.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:   
+              arguments:
+                min_value: 0
+                max_value: 1
+unit_tests:
+  - name: gini_ranks_within_period
+    description: Confirms the macro ranks within each period, not across all periods pooled.
+      Two perfectly-separated periods in different score bands, correct partition-scoped
+      ranking gives each a gini of exactly 1.0, while a regression that dropped
+      `partition by period` would hand P1's default a global rank and push its gini out
+      of [0,1]. This is the facet neither the accepted_range tripwire nor the sklearn
+      pooled pin covers.
+    model: mart_gini_by_period
+    given:
+      - input: ref('int_score_with_periods')
+        rows:
+          - {period: 'P0', score: 10, is_default: 0}
+          - {period: 'P0', score: 20, is_default: 1}
+          - {period: 'P1', score: 30, is_default: 0}
+          - {period: 'P1', score: 40, is_default: 1}
+    expect:
+      rows:
+        - {period: 'P0', gini: 1.0}
+        - {period: 'P1', gini: 1.0}

@@ -218,5 +218,23 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Project specific
-data/raw/
-.venv/
+# Project specific
+
+# raw (Kaggle) + processed; regenerates from Phase 1
+data/
+
+# DuckDB build artifacts
+*.duckdb
+*.duckdb.wal
+
+# dbt deps — regenerate with `dbt deps`
+dbt_packages/
+
+# dbt logs
+logs/
+
+# macOS cruft
+.DS_Store
+
+# working profile is external; insurance only
+profiles.yml

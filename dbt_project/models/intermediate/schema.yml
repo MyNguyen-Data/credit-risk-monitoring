@@ -1,0 +1,160 @@
+version: 2
+
+models:
+  - name: int_period_assignment
+    description: Assigns each scored applicant to one monitoring period. One row per
+      applicant by construction, so no uniqueness test is carried, the source
+      (stg_scored_applications) is unique on sk_id_curr and test-guarded there;
+      the scored CTE only projects columns (no join, no aggregation); the periods
+      and m_cohort CTEs each apply a row-preserving filter, with periods adding an
+      ntile window that labels rows without changing cardinality; and the final
+      union all combines two branches that are disjoint on sk_id_curr, since an
+      applicant's single days_decision is either = m_sentinel or <> m_sentinel,
+      never both. The only path that could break uniqueness runs through the
+      source losing its own, which the source's uniqueness test already catches —
+      a test here would be a second alarm for the same cause. Every emitted row
+      also carries a period (a P-label or 'M') by construction, so period
+      coverage is not guarded at this model; that loud-failure guard sits
+      downstream on int_score_with_periods.period, where the LEFT JOIN turns a
+      dropped null-days_decision applicant into a visible null.
+    columns:
+      - name: period
+        description: Synthetic monitoring period. Non-sentinel applicants are bucketed into
+          n_periods quantiles by ntile() ordered on (days_decision, sk_id_curr). The
+          sk_id_curr tiebreaker makes the sort a total order (sk_id_curr is unique),
+          so bucket boundaries are deterministic across runs and the period-resolved
+          metrics downstream — per-period Gini, the period x pillar grid, and
+          per-period PSI (score and feature) — stay reproducible. The M sentinel
+          cohort (days_decision = m_sentinel) is filtered out before the ntile and
+          labelled 'M' separately, so the P-buckets are quantiles of the genuine
+          days_decision distribution rather than being skewed by the median-fill
+          cluster.
+  - name: int_score_with_periods
+    description: Score frame with monitoring period attached, one row per applicant
+      (sk_id_curr, is_default, score, period), built by LEFT JOIN-ing
+      int_period_assignment onto stg_scored_applications. No uniqueness test is
+      carried because grain is construction-guaranteed — stg_scored_applications
+      is unique on sk_id_curr (test-guarded there) and int_period_assignment is
+      unique on sk_id_curr by construction, so the LEFT JOIN cannot fan out. The
+      relationships test on sk_id_curr checks population alignment with the
+      parallel score-PSI frame, every applicant here must also appear in
+      int_score_with_deciles. It is one-directional — it fires if this frame holds
+      an applicant the decile frame doesn't, not the reverse.
+    columns:
+      - name: sk_id_curr
+        tests:
+          - relationships:
+              arguments:
+                to: ref('int_score_with_deciles')
+                field: sk_id_curr
+      - name: period
+        description: Monitoring period for each scored applicant, attached by LEFT JOIN to
+          int_period_assignment on sk_id_curr. The not_null test is a loud-failure
+          guard on period coverage, int_period_assignment splits applicants on
+          days_decision <> m_sentinel vs = m_sentinel, a partition that is exhaustive
+          only for non-null days_decision. An applicant whose days_decision is null
+          falls out of both branches, is absent from int_period_assignment, and
+          surfaces here as a null period through the LEFT JOIN. Today this is
+          prevented by the upstream median-fill (the M cohort), so the test passes;
+          it fires if a future refresh leaves a days_decision null, instead of
+          letting the row drop silently.
+        tests:
+          - not_null
+  - name: int_features_with_periods
+    columns:
+      - name: period
+        description: Synthetic recency period, attached by LEFT JOIN to int_period_assignment
+          on sk_id_curr. The not_null test is a loud-failure coverage guard, a null period
+          means the applicant is absent from int_period_assignment and the LEFT JOIN can't
+          tell which of two ways it happened. One is the leak, a scored applicant whose
+          days_decision is null falls out of int_period_assignment's sentinel / non-sentinel
+          partition and is never assigned a period, prevented today by the upstream median-fill
+          so the test passes, firing only if a future refresh leaves a days_decision null. The
+          other is divergence, an sk_id_curr present in stg_model_features but absent from the
+          scored population entirely, never in int_period_assignment regardless of days_decision,
+          the feature and period pipelines having drifted apart. Either root surfaces here as a
+          null period instead of letting the row drop silently. The join preserves grain
+          (unique-per-id right side), so only coverage is tested here, not grain.
+        tests:
+          - not_null
+  - name: int_features_with_bins
+    description: Per-(period, feature_name, feature_value) counts. Deliberately untested - grain is fixed
+      by the GROUP BY (uniqueness would be tautological), cnt = count(1) is non-null and >= 1 by
+      construction, value and period nulls are guarded upstream, and feature bin domains are
+      per-feature so there is no single accepted_values contract.
+  - name: int_subscore_by_pillar
+    description: Pillar-level subscore per applicant, the weighted sum of feature_value and coef
+      within combination for each feature_group, joined to the default flag. Grain is one row per
+      (sk_id_curr, pillar), fixed by the subscore CTE's GROUP BY. No uniqueness test is carried, the
+      final LEFT JOIN to stg_scored_applications on sk_id_curr is the only fan-out surface for this
+      grain and it can't fan out because stg_scored_applications is unique on sk_id_curr (test-guarded
+      there), so the grain survives the join and a uniqueness test here would be construction-redundant.
+      That same join is also the coverage surface, it leaves is_default null for any applicant absent
+      from the scored set, which the column's not_null catches.
+    columns:
+      - name: is_default
+        description: Default label, carried from stg_scored_applications via LEFT join on sk_id_curr. not_null 
+          enforces full coverage — a feature-set applicant missing from the scored population, or a null label, 
+          drops to null here and corrupts the Gini rank-sum downstream.
+        tests: 
+          - not_null
+  - name: int_score_pooled
+    description: Thin constant-column wrapper, sourced from stg_scored_applications not the period model, 
+      exists only to give the macro a single-group partition.
+  - name: int_subscore_by_pillar_with_periods
+    description: Input to mart_gini_by_pillar_with_periods, one row per (sk_id_curr, pillar)
+      carrying subscore, is_default, and the attached period, built by LEFT
+      JOIN-ing int_score_with_periods onto int_subscore_by_pillar on sk_id_curr.
+      No tests are carried, and each skip is deliberate. Grain (sk_id_curr, pillar)
+      is preserved by construction, the LEFT JOIN is the only fan-out surface and
+      it cannot fan out, since int_score_with_periods is unique on sk_id_curr by
+      construction — back through int_period_assignment to the test-guarded
+      stg_scored_applications — and int_subscore_by_pillar is already one row per
+      (sk_id_curr, pillar), so no grain test. period coverage is guarded upstream,
+      not here, a null period could only come from the upstream null-days_decision
+      leak, which fires loudly at int_score_with_periods.period, and since both
+      join inputs share the same scored population the LEFT JOIN never misses on
+      its own — re-testing here would duplicate that guard. subscore and is_default
+      are guarded upstream on int_subscore_by_pillar (the Phase 1 melt yields
+      non-null feature values), so they are not re-tested.
+  - name: int_score_with_deciles
+    description: Score-PSI input frame, each scored applicant with their period and a
+      score_decile bucket. Decile edges are the nine quantile_cont cut-points of
+      score computed over the P0 cohort only — the bins are anchored to the
+      baseline period and held fixed, which is what makes the downstream PSI
+      meaningful (later periods are scored against a stable reference, so their
+      bucket counts are free to drift). score_decile is the count of those edges
+      an applicant's score clears, giving 0-9. No uniqueness test is carried
+      because grain is construction-guaranteed, the scored CTE is one row per
+      applicant (unique stg_scored_applications LEFT JOIN unique
+      int_period_assignment), and the cross join to edges does not fan out because
+      edges is a single-row aggregate — a quantile over the whole P0 cohort with
+      no group by is exactly one row. The cross join reads like a fan-out surface
+      but isn't, for that reason.
+    columns:
+      - name: period
+        description: Monitoring period for each scored applicant, attached by LEFT JOIN to
+          int_period_assignment in the scored CTE. not_null is the same
+          loud-failure coverage guard as on int_score_with_periods.period, a
+          null-days_decision applicant falls out of int_period_assignment's
+          sentinel / non-sentinel partition and surfaces here as a null period
+          through the LEFT JOIN. Green today on the upstream median-fill; fires if
+          a future refresh leaves a days_decision null, instead of letting the row
+          drop silently.
+        tests:
+          - not_null
+      - name: score_decile
+        description: Score bucket 0-9, the number of P0-anchored quantile edges the
+          applicant's score clears (0 = below the first edge, 9 = at or above all
+          nine). accepted_values [0-9] is a tripwire on the bucketing, with nine
+          fixed edges the count is structurally 0-9, so a value outside that range
+          means the edge list drifted from nine elements (e.g. the quantile
+          probabilities were changed) and the decile definition broke. Per-period
+          bucket counts are deliberately non-uniform — since the edges are fixed
+          to P0, a later period's scores massing in some deciles is the shift PSI
+          is built to measure, not a failure.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+                quote: false

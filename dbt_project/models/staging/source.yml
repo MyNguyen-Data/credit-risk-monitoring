@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Raw tables loaded from upstream CSV outputs"
+    schema: phase1     
+    tables:
+      - name: scored_applications
+        description: "Scoring output from logistic regression model"
+        columns:
+          - name: SK_ID_CURR
+          - name: score
+          - name: TARGET
+          - name: DAYS_DECISION
+      - name: model_features
+        description: "IV-selected features used by the model, in long format (one row per applicant-feature pair)"
+        columns:
+          - name: SK_ID_CURR
+          - name: feature_name
+          - name: feature_value
+          - name: feature_group
+      - name: model_coefficients
+        description: "Model Coefficients"
+        columns:
+          - name: feature_name
+          - name: coefficient
+  

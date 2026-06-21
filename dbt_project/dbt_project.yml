@@ -1,0 +1,20 @@
+name: credit_risk_monitoring
+version: '1.0.0'
+profile: credit_risk_monitoring  
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+
+models:
+  credit_risk_monitoring:
+    +materialized: view
+
+vars:
+  n_periods: 6
+  m_sentinel: 299   
+  psi_epsilon: 0.0001
+  psi_moderate: 0.1
+  psi_high: 0.2
+
+flags:
+  require_generic_test_arguments_property: true

@@ -1,0 +1,27 @@
+{
+  "model_type": "Pipeline(WOEEncoder -> LogisticRegression)",
+  "feature_set": "widened_woe_iv_selected_rare_collapsed",
+  "n_features": 12,
+  "feature_names": [
+    "bur_avg_util_ratio",
+    "bur_avg_credit_days",
+    "DAYS_EMPLOYED",
+    "DAYS_BIRTH",
+    "bur_newest_credit_days",
+    "OCCUPATION_TYPE",
+    "credit_to_goods",
+    "NAME_INCOME_TYPE",
+    "bur_avg_end_days",
+    "ORGANIZATION_TYPE",
+    "REGION_RATING_CLIENT_W_CITY",
+    "NAME_EDUCATION_TYPE"
+  ],
+  "cv_auc": 0.6829380538225914,
+  "cv_auc_std": 0.0030425857877733114,
+  "gini": 0.36587610764518264,
+  "class_weight": "none (plain)",
+  "ext_source_used": false,
+  "trained_on": "2026-05-30",
+  "sklearn_version": "1.8.0",
+  "python_version": "3.13.7"
+}
