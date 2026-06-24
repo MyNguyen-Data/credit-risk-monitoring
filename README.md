@@ -107,7 +107,9 @@ held-open notebook connection blocks the build (see Production Notes → DuckDB 
 
 ## Phase 1 — The Model
 
-**Data.** Home Credit Default Risk (Kaggle): 307,511 applications, ~8% default base rate.
+**Data.** 
+
+Home Credit Default Risk (Kaggle): 307,511 applications, ~8% default base rate.
 Predictors are anchored on aggregated credit-bureau history, widened with application-form
 demographic, employment, financial, and region features.
 
@@ -126,7 +128,9 @@ demographic, employment, financial, and region features.
   > 0.85 (5 collinear pairs removed, e.g. region rating with/without city) → hard cap at
   top-12 by IV.
 
-**Model.** Plain logistic regression on WOE-encoded features (not class-balanced —
+**Model.** 
+
+Plain logistic regression on WOE-encoded features (not class-balanced —
 `class_weight` barely moves a rank-based metric, and plain weights keep predicted probabilities
 calibrated to the true ~8% base rate, which a scored-and-monitored scorecard needs).
 
