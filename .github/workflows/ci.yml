@@ -1,0 +1,77 @@
+name: dbt CI
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    working-directory: dbt_project
+
+env:
+  DBT_BIGQUERY_PROJECT: ${{ secrets.DBT_BIGQUERY_PROJECT }}
+  DBT_BIGQUERY_CI_DATASET: dbt_ci_pr_${{ github.event.pull_request.number }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install dbt
+        run: pip install -r ../requirements-ci.txt
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          export_environment_variables: true
+
+      - name: Install dbt packages
+        run: dbt deps
+
+      - name: Fetch production manifest
+        id: manifest
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow deploy.yml \
+            --branch main \
+            --status success \
+            --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful deploy run found."
+            exit 1
+          fi
+          gh run download "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name prod-manifest \
+            --dir prod-artifacts
+
+      - name: Build changed models (slim CI)
+        if: steps.manifest.outcome == 'success'
+        run: |
+          dbt build --target ci \
+            --select state:modified+ \
+            --defer --state ./prod-artifacts
+
+      - name: Build everything (no baseline manifest)
+        if: steps.manifest.outcome != 'success'
+        run: dbt build --target ci

@@ -1,0 +1,30 @@
+credit_risk_monitoring:
+  target: dev
+  outputs:
+
+    dev:
+      type: duckdb
+      path: dev.duckdb
+      threads: 4
+
+    ci:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('DBT_BIGQUERY_PROJECT') }}"
+      dataset: "{{ env_var('DBT_BIGQUERY_CI_DATASET') }}"
+      location: asia-southeast1
+      threads: 4
+      priority: interactive
+      maximum_bytes_billed: 2147483648
+      job_retries: 1
+
+    prod:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('DBT_BIGQUERY_PROJECT') }}"
+      dataset: dbt_credit_scoring
+      location: asia-southeast1
+      threads: 4
+      priority: interactive
+      maximum_bytes_billed: 2147483648
+      job_retries: 1
