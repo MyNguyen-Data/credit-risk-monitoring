@@ -77,27 +77,29 @@ bin_definitions.csv   — WOE/IV dictionary; reference, not consumed by the dbt 
 
 Phase 2 reads the Phase 1 outputs from `data/processed/` (produced by the Phase 1 notebook). With
 those in place, the pipeline is a **two-step run** — load the sources into `phase1`, then build.
-All commands run from the repo root.
+Setup starts at the repo root and ends inside `dbt_project/`; every command after it runs from
+there.
 
 **Setup**
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install dbt-core dbt-duckdb dbt-bigquery
-dbt deps --project-dir dbt_project          # pulls dbt_utils (packages.yml)
+cd dbt_project
+dbt deps           # pulls dbt_utils (packages.yml)
 ```
 
 **dev — DuckDB, no cloud account**
 ```bash
-python scripts/load_rawdata.py               # CSVs → phase1 in dbt_project/dev.duckdb
-dbt build --target dev --project-dir dbt_project
+python ../scripts/load_rawdata.py    # CSVs → phase1 in dev.duckdb
+dbt build --target dev
 ```
 
 **prod — BigQuery (your own GCP project; phase1 dataset in asia-southeast1)**
 ```bash
 gcloud auth application-default login
-export GCP_PROJECT=your-project-id     # load_bigquery.py reads this
-python scripts/load_bigquery.py              # CSVs → phase1 dataset via load jobs
-dbt build --target prod --project-dir dbt_project
+export DBT_BIGQUERY_PROJECT=your-project-id   # dbt requires this; load_bigquery.py falls back to it
+python ../scripts/load_bigquery.py            # CSVs → phase1 dataset via load jobs
+dbt build --target prod
 ```
 
 The load must finish before `dbt build`: DuckDB allows a single read-write connection, so a
