@@ -455,6 +455,8 @@ the Gini uses midrank handling, the same convention as the pooled score. The ran
 shared with the per-period Gini via the `gini_rank_sum` macro, parameterized on the score column
 and the partition.
 
+---
+
 ## Testing
 
 The dbt project ships a test suite, not just models — data tests on invariants, plus a unit test on transformation logic. Tests target things that can actually break and are placed where they bite: uniqueness/grain tests sit only at joins that can fan out rows, while grains fixed by a GROUP BY or an x/sum(x) normalization are left untested by design — such a test would be tautological, and the schema.yml description says so rather than silently omitting it.
