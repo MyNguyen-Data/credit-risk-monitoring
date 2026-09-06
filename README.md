@@ -35,6 +35,7 @@ The opinionated choices are signals, not gaps:
 | Scoring | Python, pandas, scikit-learn |
 | Storage / SQL engine | DuckDB (dev) · BigQuery (prod) |
 | Monitoring transforms | dbt |
+| CI/CD | GitHub Actions |
 | Data | Home Credit Default Risk (Kaggle) |
 
 ## Warehouse portability
@@ -461,6 +462,32 @@ The dbt project ships a test suite, not just models — data tests on invariants
 Coverage is stated honestly. The score-PSI and feature-PSI lineages are covered: grain at the load and at the group-label join, null guards on values and period assignment, PSI non-negativity, and the alert-tier vocabulary. The Gini lineage is covered too: range guards on mart_gini_by_period, mart_gini_by_pillar, and mart_gini_pooled, a null guard on mart_gini_by_period, and a referential test that every scored feature carries a coefficient. The per-test reasoning — why each guard is non-tautological, which silent failure it catches — lives in the model descriptions, where it renders in dbt docs next to the column it defends.
 
 One unit test backs the rank-sum macro. The pooled sklearn reproduction (eight significant figures, above) pins the math, but it cannot tell whether the macro ranks within each period or pools across them — and a range check cannot either. The unit test verifies that per-partition ranking directly, against a hand-verified fixture: the one correctness facet neither the reproduction nor the range guards reach.
+
+---
+
+## Continuous integration
+
+Three GitHub Actions workflows cover the pull request lifecycle.
+
+- **`ci.yml`** — on every pull request. Builds and tests the models that differ from production, into a dataset scoped to that PR.
+- **`deploy.yml`** — on merge to `main`. Full build against the production dataset, then uploads the run's `manifest.json` as a workflow artifact. That artifact is the baseline the next PR compares against.
+- **`ci-cleanup.yml`** — on PR close. Drops the PR's dataset. No checkout and no dbt — it authenticates and issues a single `bq rm`, which is why it finishes in about thirty seconds. It triggers on `closed` rather than `merged`, so an abandoned PR is cleaned up as thoroughly as a merged one.
+
+### Narrowing the build
+
+`ci.yml` selects `state:modified+` against the production manifest: only nodes that differ from prod, plus everything downstream. Production and CI write to different datasets — `dbt_credit_scoring` and a per-PR `dbt_ci_pr_N` — and that difference does not register as a modification. A pull request touching no dbt files selects nothing and builds nothing.
+
+What this saves is narrower than it looks. Every model here is a view (see §5), and creating a view scans no data and bills nothing. The saving is in the tests, which do issue scanning queries. Narrowing the build narrows the test set; it does not avoid model-creation cost, because there wasn't any.
+
+### Cost
+
+A full build — every model, every test — billed about 1.7 GiB across 48 jobs. Four caveats belong with that number. It is a single observation, not an average. It is bytes *billed*, which is what BigQuery charges for and not the same as bytes scanned. The `maximum_bytes_billed` cap on the CI and prod targets is per query, so it bounds any single job at 2 GiB but places no ceiling on a build as a whole. And it describes a full build only — the cost of a narrowed build is unmeasured.
+
+### Failing loudly
+
+If the manifest fetch fails, the workflow falls back to building everything rather than proceeding with an empty comparison. The distinction matters: a missing baseline and a baseline showing no changes both produce an empty selection, and only the second means the PR is safe to skip. The fallback is conditioned on the fetch step's outcome, so the two stay distinguishable.
+
+The artifact is kept for ninety days, and the clock restarts with each deploy. If the project goes three months without a merge to `main`, the artifact expires, retrieval fails, and every subsequent pull request quietly reverts to full builds — passing, green, and more expensive than it looks. That is the fallback working as designed, but nothing in the interface announces it.
 
 ---
 
