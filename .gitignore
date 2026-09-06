@@ -238,3 +238,9 @@ logs/
 
 # working profile is external; insurance only
 profiles.yml
+
+# CI profile: secret-free, uses env_var + oauth
+!dbt_project/profiles.yml
+
+dbt_project/prod-artifacts/
+dbt_project/.user.yml

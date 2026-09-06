@@ -2,9 +2,10 @@ from google.cloud import bigquery
 from pathlib import Path
 import os
 
-PROJECT = os.environ.get("GCP_PROJECT")
+# Falls back to dbt's variable so a single export serves both tools.
+PROJECT = os.environ.get("GCP_PROJECT") or os.environ.get("DBT_BIGQUERY_PROJECT")
 if not PROJECT:
-    raise SystemExit("Set GCP_PROJECT to your BigQuery project id (e.g. export GCP_PROJECT=my-project)")
+    raise SystemExit("Set GCP_PROJECT (or DBT_BIGQUERY_PROJECT) to your BigQuery project id")
 DATASET = "phase1"
 LOCATION = "asia-southeast1"
 
