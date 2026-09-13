@@ -509,12 +509,15 @@ incremental design is documented here to reflect production intent.
 
 ### DuckDB concurrency
 
-DuckDB allows only one read-write connection at a time. When inspecting materialized models via
-notebook, always open the connection read-only:
+DuckDB allows only one read-write connection at a time. When inspecting materialized models
+from a notebook or Python session, always open the connection read-only:
 
 ```python
 conn = duckdb.connect('dbt_project/dev.duckdb', read_only=True)
 ```
+
+The path is relative to the repository root. A notebook started from a subdirectory will need
+to adjust it, or set its working directory to the root first.
 
 Running `dbt run` while a read-write notebook connection is open will throw a lock error.
 
