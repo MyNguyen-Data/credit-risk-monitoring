@@ -25,8 +25,8 @@ The opinionated choices are signals, not gaps:
 - **Engine-portable SQL — DuckDB locally, BigQuery in prod.** The monitoring transformations
   are warehouse-grade SQL, developed on DuckDB and translated to BigQuery. DuckDB makes the whole
   pipeline reproducible on a laptop with no infrastructure to stand up; the same models run on
-  BigQuery as the production warehouse, validated to reproduce every published metric identically
-  (see *Warehouse portability*).
+  BigQuery as the production warehouse, reproducing the published metrics (see *Warehouse
+  portability* for what was verified, and how much of it is enforced).
 
 ## Stack
 
@@ -54,9 +54,11 @@ diverge in specifics, and each divergence was resolved portably rather than by b
 - a `round(sum(...), 10)` before rank-based metrics, absorbing cross-engine float-summation order
   differences that would otherwise flip mid-rank tie boundaries
 
-After translation, the prod build reproduces the validated metrics — pooled Gini pins to
-`0.36619854813983066`, the PSI cohorts match — enforced as dbt tests that run *on* the BigQuery
-target, not just asserted in prose.
+After translation, the prod build reproduces the validated metrics. Pooled Gini is pinned to
+`0.36619854813983066` by a dbt test that runs *on* the BigQuery target, so a cross-engine
+regression there fails the build. The PSI cohorts were compared across both engines directly and
+matched — same values, same alert tiers — but that was a one-time comparison, not a standing test.
+Nothing re-checks it on each run.
 
 ## Architecture
 
