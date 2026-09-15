@@ -55,10 +55,20 @@ diverge in specifics, and each divergence was resolved portably rather than by b
   differences that would otherwise flip mid-rank tie boundaries
 
 After translation, the prod build reproduces the validated metrics. Pooled Gini is pinned to
-`0.36619854813983066` by a dbt test that runs *on* the BigQuery target, so a cross-engine
-regression there fails the build. The PSI cohorts were compared across both engines directly and
-matched — same values, same alert tiers — but that was a one-time comparison, not a standing test.
-Nothing re-checks it on each run.
+`0.36619854813983066`, and the two moderate PSI alerts on the sentinel cohort `M` are pinned to
+their observed values, by dbt tests that run *on* whichever target is active — so against BigQuery
+they are standing cross-engine checks, and a regression fails the build.
+
+What those tests enforce is agreement within a `1e-9` tolerance, not bit-level identity.
+Establishing identity turns out to be past what the tooling can show: BigQuery's `FORMAT` caps at
+roughly seventeen significant digits and pads beyond that, so decimal text cannot resolve a
+final-bit difference in either direction. For the pooled Gini no difference is detectable and none
+is expected — the `round(sum(...), 10)` above removes the summation-order sensitivity before the
+ranking. For PSI there is no such step: it is a sum of `(a − b)·ln(a / b)`, transcendental
+implementations are not guaranteed to agree to the last bit, and one of the two pinned literals
+does sit one ULP off the value DuckDB returns — a gap of 2.8e-17, eight orders of magnitude inside
+the tolerance. The tolerance is load-bearing there in a way it is not for Gini, and the test
+headers say which is which.
 
 ## Architecture
 
@@ -112,7 +122,7 @@ held-open notebook connection blocks the build (see Production Notes → DuckDB 
 
 ## Phase 1 — The Model
 
-**Data.** 
+**Data.**
 
 Home Credit Default Risk (Kaggle): 307,511 applications, ~8% default base rate.
 Predictors are anchored on aggregated credit-bureau history, widened with application-form
@@ -133,7 +143,7 @@ demographic, employment, financial, and region features.
   > 0.85 (5 collinear pairs removed, e.g. region rating with/without city) → hard cap at
   top-12 by IV.
 
-**Model.** 
+**Model.**
 
 Plain logistic regression on WOE-encoded features (not class-balanced —
 `class_weight` barely moves a rank-based metric, and plain weights keep predicted probabilities
@@ -421,10 +431,10 @@ would understate it.
 | P5     | 0.339 |
 | M      | 0.376 |
 
-**Reading.** Discrimination is stable across the period cohorts — the per-period mean 
-over P0–P5 (≈ 0.362) sits in line with the pooled 0.366, with the sentinel M (0.376) held out. 
-No monotonic trend (P2 highest, P5 lowest, the rest mid-pack); the spread is scatter, 
-not decay — a directional claim either way would need a bootstrap or DeLong CI, 
+**Reading.** Discrimination is stable across the period cohorts — the per-period mean
+over P0–P5 (≈ 0.362) sits in line with the pooled 0.366, with the sentinel M (0.376) held out.
+No monotonic trend (P2 highest, P5 lowest, the rest mid-pack); the spread is scatter,
+not decay — a directional claim either way would need a bootstrap or DeLong CI,
 which this pipeline does not yet compute.
 
 ### Pillar (grouped) Gini
@@ -461,9 +471,13 @@ and the partition.
 
 ## Testing
 
-The dbt project ships a test suite, not just models — data tests on invariants, plus a unit test on transformation logic. Tests target things that can actually break and are placed where they bite: uniqueness/grain tests sit only at joins that can fan out rows, while grains fixed by a GROUP BY or an x/sum(x) normalization are left untested by design — such a test would be tautological, and the schema.yml description says so rather than silently omitting it.
+The dbt project ships a test suite, not just models — data tests on invariants, baseline tests that pin computed values,
+and a unit test on transformation logic. The three catch different failures: an invariant test says a value must be in
+range or non-null whatever the data; a baseline test says this particular number must not move, which catches a drift
+that satisfies every invariant on the way past; a unit test says the transformation logic is right on a fixture whose
+answer is known by hand. Tests target things that can actually break and are placed where they bite: uniqueness/grain tests sit only at joins that can fan out rows, while grains fixed by a GROUP BY or an x/sum(x) normalization are left untested by design — such a test would be tautological, and the schema.yml description says so rather than silently omitting it.
 
-Coverage is stated honestly. The score-PSI and feature-PSI lineages are covered: grain at the load and at the group-label join, null guards on values and period assignment, PSI non-negativity, and the alert-tier vocabulary. The Gini lineage is covered too: range guards on mart_gini_by_period, mart_gini_by_pillar, and mart_gini_pooled, a null guard on mart_gini_by_period, and a referential test that every scored feature carries a coefficient. The per-test reasoning — why each guard is non-tautological, which silent failure it catches — lives in the model descriptions, where it renders in dbt docs next to the column it defends.
+Coverage is stated honestly. The score-PSI and feature-PSI lineages are covered: grain at the load and at the group-label join, null guards on values and period assignment, PSI non-negativity, and the alert-tier vocabulary. The Gini lineage is covered too: range guards on mart_gini_by_period, mart_gini_by_pillar, and mart_gini_pooled, a null guard on mart_gini_by_period, and a referential test that every scored feature carries a coefficient. The per-test reasoning — why each guard is non-tautological, which silent failure it catches — lives in the model descriptions, where it renders in dbt docs next to the column it defends. Three values are pinned on top of that: the pooled Gini, and the two moderate M-cohort feature PSIs, each to a 1e-9 tolerance. Singular tests have no schema.yml slot, so their reasoning lives in a comment header in the test file rather than in a model description.
 
 One unit test backs the rank-sum macro. The pooled sklearn reproduction (eight significant figures, above) pins the math, but it cannot tell whether the macro ranks within each period or pools across them — and a range check cannot either. The unit test verifies that per-partition ranking directly, against a hand-verified fixture: the one correctness facet neither the reproduction nor the range guards reach.
 
