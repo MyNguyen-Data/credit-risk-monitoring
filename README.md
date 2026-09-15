@@ -51,24 +51,28 @@ diverge in specifics, and each divergence was resolved portably rather than by b
 - `quantile_cont(...)` aggregate → `percentile_cont(...) over ()`
 - `||` integer concatenation → explicit `cast(... as string)`
 - `(values …) as t(cols)` fixtures → `union all select` with named columns
-- a `round(sum(...), 10)` before rank-based metrics, absorbing cross-engine float-summation order
-  differences that would otherwise flip mid-rank tie boundaries
+- a `round(sum(...), 10)` before rank-based metrics, absorbing float-summation order differences
+  that would otherwise flip mid-rank tie boundaries — these are not only cross-engine: thread
+  scheduling makes the same sum non-reproducible to the last bit within a single engine too
 
 After translation, the prod build reproduces the validated metrics. Pooled Gini is pinned to
 `0.36619854813983066`, and the two moderate PSI alerts on the sentinel cohort `M` are pinned to
 their observed values, by dbt tests that run *on* whichever target is active — so against BigQuery
 they are standing cross-engine checks, and a regression fails the build.
 
-What those tests enforce is agreement within a `1e-9` tolerance, not bit-level identity.
-Establishing identity turns out to be past what the tooling can show: BigQuery's `FORMAT` caps at
-roughly seventeen significant digits and pads beyond that, so decimal text cannot resolve a
-final-bit difference in either direction. For the pooled Gini no difference is detectable and none
-is expected — the `round(sum(...), 10)` above removes the summation-order sensitivity before the
-ranking. For PSI there is no such step: it is a sum of `(a − b)·ln(a / b)`, transcendental
-implementations are not guaranteed to agree to the last bit, and one of the two pinned literals
-does sit one ULP off the value DuckDB returns — a gap of 2.8e-17, eight orders of magnitude inside
-the tolerance. The tolerance is load-bearing there in a way it is not for Gini, and the test
-headers say which is which.
+What those tests enforce is agreement within a `1e-9` tolerance, not bit-level identity. Identity is not merely
+unshown but unavailable: sums over rows are not reproducible to the last bit even on a single engine,
+because floating-point addition is not associative and neither engine fixes the order in which partial
+sums are combined across threads. Three consecutive DuckDB runs over identical data returned three distinct values
+for one such sum, adjacent pairs one ULP apart. A second and independent limit sits on top of that — BigQuery's `FORMAT`
+caps at roughly seventeen significant digits and pads beyond, so decimal text could not resolve a final-bit difference
+even if one were stable enough to look for. For the pooled Gini no difference is detectable and none is expected
+— the `round(sum(...), 10)` above removes the summation-order sensitivity before the ranking — which is why
+the Gini lineage is reproducible where the raw PSI sums are not. For PSI there is no such step: it
+is a sum of `(a − b)·ln(a / b)`, and neither pinned literal corresponds to a single stable value — across
+three DuckDB runs each of the two M-cohort PSIs took two distinct values one ULP apart, so a literal is exact on
+some runs and one ULP off on others. The gaps are 2.8e-17 and 1.4e-17, eight orders of magnitude inside the tolerance.
+The tolerance is load-bearing there in a way it is not for Gini, and the test headers say which is which.
 
 ## Architecture
 
@@ -477,7 +481,7 @@ range or non-null whatever the data; a baseline test says this particular number
 that satisfies every invariant on the way past; a unit test says the transformation logic is right on a fixture whose
 answer is known by hand. Tests target things that can actually break and are placed where they bite: uniqueness/grain tests sit only at joins that can fan out rows, while grains fixed by a GROUP BY or an x/sum(x) normalization are left untested by design — such a test would be tautological, and the schema.yml description says so rather than silently omitting it.
 
-Coverage is stated honestly. The score-PSI and feature-PSI lineages are covered: grain at the load and at the group-label join, null guards on values and period assignment, PSI non-negativity, and the alert-tier vocabulary. The Gini lineage is covered too: range guards on mart_gini_by_period, mart_gini_by_pillar, and mart_gini_pooled, a null guard on mart_gini_by_period, and a referential test that every scored feature carries a coefficient. The per-test reasoning — why each guard is non-tautological, which silent failure it catches — lives in the model descriptions, where it renders in dbt docs next to the column it defends. Three values are pinned on top of that: the pooled Gini, and the two moderate M-cohort feature PSIs, each to a 1e-9 tolerance. Singular tests have no schema.yml slot, so their reasoning lives in a comment header in the test file rather than in a model description.
+Coverage is stated honestly. The score-PSI and feature-PSI lineages are covered: grain at the load and at the group-label join, null guards on values and period assignment, PSI non-negativity, and the alert-tier vocabulary. The Gini lineage is covered too: range guards on mart_gini_by_period, mart_gini_by_pillar, and mart_gini_pooled, a null guard on mart_gini_by_period, and a referential test that every scored feature carries a coefficient. The per-test reasoning — why each guard is non-tautological, which silent failure it catches — lives in the model descriptions, where it renders in dbt docs next to the column it defends. Three values are pinned on top of that: the pooled Gini, and the two moderate M-cohort feature PSIs, each to a 1e-9 tolerance. A fourth baseline test pins the shape of mart_psi_features rather than a single value — the row count per alert tier and the sum of PSI within each tier, with the counts totalling 84 (twelve features × seven periods) so that the assertion doubles as a grain check. The baseline tier's sum is pinned to exactly zero, since a period compared against itself is zero before any rounding occurs; the other two sums carry the 1e-9 tolerance, because summation order across threads makes them non-reproducible to the last bit even on a single engine. Singular tests have no schema.yml slot, so their reasoning lives in a comment header in the test file rather than in a model description.
 
 One unit test backs the rank-sum macro. The pooled sklearn reproduction (eight significant figures, above) pins the math, but it cannot tell whether the macro ranks within each period or pools across them — and a range check cannot either. The unit test verifies that per-partition ranking directly, against a hand-verified fixture: the one correctness facet neither the reproduction nor the range guards reach.
 
